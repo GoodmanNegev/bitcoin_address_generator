@@ -18,30 +18,24 @@ class BitcoinAddressGenerator:
         self._sha256_cache = []
         
     def _get_ripemd160(self):
-        """Get a reusable RIPEMD160 hash object"""
-        if self._ripemd160_cache:
-            hasher = self._ripemd160_cache.pop()
-            hasher.digest()  # Reset the hasher
-            return hasher
+        """Get a fresh RIPEMD160 hash object"""
+        # Always create a new hash object to avoid state issues
         return hashlib.new('ripemd160')
     
     def _return_ripemd160(self, hasher):
-        """Return a RIPEMD160 hash object to cache"""
-        if len(self._ripemd160_cache) < 10:  # Limit cache size
-            self._ripemd160_cache.append(hasher)
+        """Return a RIPEMD160 hash object to cache (no-op now)"""
+        # No longer caching to avoid state issues
+        pass
     
     def _get_sha256(self):
-        """Get a reusable SHA256 hash object"""
-        if self._sha256_cache:
-            hasher = self._sha256_cache.pop()
-            hasher.digest()  # Reset the hasher
-            return hasher
+        """Get a fresh SHA256 hash object"""
+        # Always create a new hash object to avoid state issues
         return hashlib.sha256()
     
     def _return_sha256(self, hasher):
-        """Return a SHA256 hash object to cache"""
-        if len(self._sha256_cache) < 10:  # Limit cache size
-            self._sha256_cache.append(hasher)
+        """Return a SHA256 hash object to cache (no-op now)"""
+        # No longer caching to avoid state issues
+        pass
     
     def clear_cache(self):
         """Clear all cached hash objects to free memory"""
