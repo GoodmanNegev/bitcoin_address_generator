@@ -1,0 +1,10 @@
+# Main dependencies - install with: python3 -m pip install fastapi uvicorn websockets
+fastapi==0.104.1
+uvicorn==0.24.0
+websockets==12.0
+
+# For a minimal version, we'll implement the crypto functions ourselves
+# If you have pip available, you can uncomment these for better compatibility:
+ecdsa==0.18.0
+base58==2.1.1
+bech32==1.2.0
