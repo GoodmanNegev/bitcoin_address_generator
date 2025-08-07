@@ -41,8 +41,10 @@ python main.py
 #### 前端安装
 ```bash
 cd frontend
+chmod +x node_modules/.bin/vite 
 npm install
 npm run dev
+#npm run dev -- --host 0.0.0.0 
 ```
 
 ### 访问应用

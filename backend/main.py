@@ -1,10 +1,12 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import asyncio
 import uvicorn
 import json
+from sqlalchemy.orm import Session
+from database import get_db, BitcoinAddress, create_tables, test_connection
 # Try to import the full version first, fall back to simple version
 try:
     from btc_generator import BitcoinAddressGenerator
@@ -38,6 +40,37 @@ class GenerationResponse(BaseModel):
 active_tasks: Dict[str, Dict[str, Any]] = {}
 
 generator = BitcoinAddressGenerator()
+
+# Database service functions
+def save_address_to_db(db: Session, address: str, private_key: str, address_type: str, 
+                      pattern: str = None, position: str = None, attempts: int = None, 
+                      generation_source: str = 'backend'):
+    """Save generated address to database"""
+    if db is None:
+        print("Database not available, skipping save")
+        return None
+        
+    try:
+        db_address = BitcoinAddress(
+            address=address,
+            private_key=private_key,
+            address_type=address_type,
+            pattern=pattern,
+            position=position,
+            attempts=attempts,
+            generation_source=generation_source
+        )
+        db.add(db_address)
+        db.commit()
+        db.refresh(db_address)
+        return db_address
+    except Exception as e:
+        try:
+            db.rollback()
+        except:
+            pass
+        print(f"Error saving address to database: {e}")
+        return None  # Don't raise exception, just log and continue
 
 # Task cleanup function
 def cleanup_disconnected_tasks():
@@ -73,10 +106,23 @@ async def get_address_types():
     }
 
 @app.post("/generate")
-async def generate_single_address(request: GenerationRequest):
+async def generate_single_address(request: GenerationRequest, db: Session = Depends(get_db)):
     """Generate a single address without pattern matching"""
     try:
         address, private_key = generator.generate_address(request.address_type)
+        
+        # Save to database
+        save_address_to_db(
+            db=db,
+            address=address,
+            private_key=private_key,
+            address_type=request.address_type,
+            pattern=request.pattern if request.pattern else None,
+            position=request.position if request.pattern else None,
+            attempts=1,
+            generation_source='backend'
+        )
+        
         return GenerationResponse(
             address=address,
             private_key=private_key,
@@ -87,28 +133,44 @@ async def generate_single_address(request: GenerationRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/generate-batch")
-async def generate_batch_addresses(request: GenerationRequest, batch_size: int = 10):
+async def generate_batch_addresses(request: GenerationRequest, batch_size: int = 10, db: Session = Depends(get_db)):
     """Generate multiple addresses in batch for better performance"""
     try:
         if batch_size > 100:
             raise HTTPException(status_code=400, detail="批量大小不能超过100")
         
         batch = generator.generate_batch(request.address_type, batch_size)
+        
+        # Save all addresses to database
+        saved_addresses = []
+        for addr, pk in batch:
+            try:
+                db_address = save_address_to_db(
+                    db=db,
+                    address=addr,
+                    private_key=pk,
+                    address_type=request.address_type,
+                    pattern=request.pattern if request.pattern else None,
+                    position=request.position if request.pattern else None,
+                    attempts=1,
+                    generation_source='backend'
+                )
+                saved_addresses.append({"address": addr, "private_key": pk})
+            except Exception as e:
+                print(f"Failed to save address {addr}: {e}")
+                # Continue with other addresses even if one fails
+                saved_addresses.append({"address": addr, "private_key": pk})
+        
         return {
-            "addresses": [
-                {
-                    "address": addr,
-                    "private_key": pk
-                } for addr, pk in batch
-            ],
-            "count": len(batch),
+            "addresses": saved_addresses,
+            "count": len(saved_addresses),
             "success": True
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/find-pattern")
-async def find_pattern_address(request: GenerationRequest, max_attempts: int = None):
+async def find_pattern_address(request: GenerationRequest, max_attempts: int = None, db: Session = Depends(get_db)):
     """Find address matching pattern using optimized methods"""
     try:
         if not request.pattern:
@@ -126,6 +188,19 @@ async def find_pattern_address(request: GenerationRequest, max_attempts: int = N
         
         if result:
             address, private_key, attempts = result
+            
+            # Save to database
+            save_address_to_db(
+                db=db,
+                address=address,
+                private_key=private_key,
+                address_type=request.address_type,
+                pattern=request.pattern,
+                position=request.position,
+                attempts=attempts,
+                generation_source='backend'
+            )
+            
             return GenerationResponse(
                 address=address,
                 private_key=private_key,
@@ -245,6 +320,27 @@ async def generate_with_pattern(websocket: WebSocket, task_id: str, address_type
         # If no pattern, just generate one address quickly
         if not pattern:
             address, private_key = generator.generate_address(address_type)
+            
+            # Save to database
+            try:
+                from database import SessionLocal
+                db = SessionLocal()
+                try:
+                    save_address_to_db(
+                        db=db,
+                        address=address,
+                        private_key=private_key,
+                        address_type=address_type,
+                        pattern=None,
+                        position=None,
+                        attempts=1,
+                        generation_source='backend'
+                    )
+                finally:
+                    db.close()
+            except Exception as e:
+                print(f"Failed to save address to database: {e}")
+            
             await websocket.send_text(json.dumps({
                 "type": "success",
                 "address": address,
@@ -305,6 +401,27 @@ async def generate_with_pattern(websocket: WebSocket, task_id: str, address_type
                     result = future.result(timeout=1.0)
                     if result:
                         address, private_key, attempts = result
+                        
+                        # Save to database
+                        try:
+                            from database import SessionLocal
+                            db = SessionLocal()
+                            try:
+                                save_address_to_db(
+                                    db=db,
+                                    address=address,
+                                    private_key=private_key,
+                                    address_type=address_type,
+                                    pattern=pattern,
+                                    position=position,
+                                    attempts=attempts,
+                                    generation_source='backend'
+                                )
+                            finally:
+                                db.close()
+                        except Exception as e:
+                            print(f"Failed to save address to database: {e}")
+                        
                         await websocket.send_text(json.dumps({
                             "type": "success",
                             "address": address,
@@ -374,6 +491,26 @@ async def generate_with_pattern(websocket: WebSocket, task_id: str, address_type
                     
                     # Check pattern match
                     if generator.check_pattern_match(address, pattern, position):
+                        # Save to database
+                        try:
+                            from database import SessionLocal
+                            db = SessionLocal()
+                            try:
+                                save_address_to_db(
+                                    db=db,
+                                    address=address,
+                                    private_key=private_key,
+                                    address_type=address_type,
+                                    pattern=pattern,
+                                    position=position,
+                                    attempts=attempts,
+                                    generation_source='backend'
+                                )
+                            finally:
+                                db.close()
+                        except Exception as e:
+                            print(f"Failed to save address to database: {e}")
+                        
                         try:
                             await websocket.send_text(json.dumps({
                                 "type": "success",
@@ -406,10 +543,79 @@ async def periodic_cleanup():
         cleanup_disconnected_tasks()
 
 # Start background cleanup task when app starts
+# New endpoint for saving frontend-generated addresses
+class SaveAddressRequest(BaseModel):
+    address: str
+    private_key: str
+    address_type: str
+    pattern: str = ""
+    position: str = "start"
+    attempts: int = 1
+
+@app.post("/save-address")
+async def save_frontend_address(request: SaveAddressRequest, db: Session = Depends(get_db)):
+    """Save address generated by frontend to database"""
+    try:
+        db_address = save_address_to_db(
+            db=db,
+            address=request.address,
+            private_key=request.private_key,
+            address_type=request.address_type,
+            pattern=request.pattern if request.pattern else None,
+            position=request.position if request.pattern else None,
+            attempts=request.attempts,
+            generation_source='frontend'
+        )
+        
+        return {
+            "success": True,
+            "message": "地址已保存到数据库",
+            "id": db_address.id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"保存地址失败: {str(e)}")
+
+@app.get("/addresses")
+async def get_saved_addresses(db: Session = Depends(get_db), limit: int = 50, offset: int = 0):
+    """Get saved addresses from database"""
+    try:
+        addresses = db.query(BitcoinAddress).order_by(BitcoinAddress.created_at.desc()).offset(offset).limit(limit).all()
+        total = db.query(BitcoinAddress).count()
+        
+        return {
+            "addresses": [
+                {
+                    "id": addr.id,
+                    "address": addr.address,
+                    "address_type": addr.address_type,
+                    "pattern": addr.pattern,
+                    "position": addr.position,
+                    "attempts": addr.attempts,
+                    "generation_source": addr.generation_source,
+                    "created_at": addr.created_at.isoformat()
+                } for addr in addresses
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.on_event("startup")
 async def startup_event():
+    # Initialize database
+    try:
+        test_connection()
+        create_tables()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Database initialization failed: {e}")
+        print("Application will continue without database functionality")
+    
     asyncio.create_task(periodic_cleanup())
     print("Started periodic cleanup task")
+    print("Bitcoin Address Generator API started successfully")
 
 @app.on_event("shutdown")
 async def shutdown_event():

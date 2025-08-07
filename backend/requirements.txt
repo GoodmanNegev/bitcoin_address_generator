@@ -8,3 +8,6 @@ websockets==12.0
 ecdsa==0.18.0
 base58==2.1.1
 bech32==1.2.0
+
+# Database dependencies
+sqlalchemy==2.0.23

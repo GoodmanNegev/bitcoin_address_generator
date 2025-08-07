@@ -609,6 +609,11 @@ export default {
             // 添加到总结果
             results.value.push(...enrichedData)
             
+            // 保存到后端数据库
+            enrichedData.forEach(result => {
+              saveToBackend(result)
+            })
+            
             // 发射结果给父组件（历史记录）
             enrichedData.forEach(result => {
               emit('result-generated', result)
@@ -633,6 +638,9 @@ export default {
             
             // 添加到总结果
             results.value.push(resultData)
+            
+            // 保存到后端数据库
+            saveToBackend(resultData)
             
             // 发射结果给父组件（历史记录）
             emit('result-generated', resultData)
@@ -1021,6 +1029,33 @@ export default {
      watch(selectedAddressType, () => {
        updateEstimation()
      })
+
+     // 保存地址到后端数据库
+     const saveToBackend = async (result) => {
+       try {
+         const response = await fetch('http://localhost:8000/save-address', {
+           method: 'POST',
+           headers: {
+             'Content-Type': 'application/json',
+           },
+           body: JSON.stringify({
+             address: result.address,
+             private_key: result.privateKeyWIF,
+             address_type: result.addressType,
+             pattern: result.pattern || '',
+             position: result.patternPosition || 'anywhere',
+             attempts: result.attempts || 1,
+             generation_source: 'frontend'
+           })
+         })
+         
+         if (!response.ok) {
+           console.warn('保存到后端失败:', response.statusText)
+         }
+       } catch (error) {
+         console.warn('保存到后端时发生错误:', error.message)
+       }
+     }
 
      return {
       selectedAddressType,
